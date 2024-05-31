@@ -1,0 +1,257 @@
+---
+title: "ci_final"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Don't change this part of the document
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, 
+                      message=FALSE, fig.width=6, fig.height = 10, fig.align="center")
+# Load the necessary packages
+library(Matching)
+library(MatchIt)
+library(Zelig)
+library(rbounds)
+library(cobalt)
+library(knitr)
+library(gridExtra)
+# Set a seed for replication purpose
+set.seed(36466)
+```
+
+## Load the data
+```{r}
+load("datamatch.Rdata")
+outcomes <- datamatch[10:18]
+outcomes.lbls <- names(outcomes)
+n.outcomes <- dim(outcomes)[2]
+```
+
+## Table 1
+
+```{r}
+tab1 <- matrix(NA, nrow = n.outcomes, ncol = 6)
+rownames(tab1) <- outcomes.lbls
+colnames(tab1) <- c("N", "prop.all", "prop.ev", "prop.tv", "diff", "pvalue")
+for (i in 1:n.outcomes) {
+  tab1[i, 1] <- length(na.omit(outcomes[, i]))
+  tab1[i, 2] <- prop.table(table(outcomes[, i]))[2] * 100	
+  tab1[i, 3:4] <- rev(prop.table(table(outcomes[, i], datamatch$EV), 2)[2, ]) * 100
+  tab1[i, 5] <- tab1[i, 3] - tab1[i, 4]	
+  tab1[i, 6] <- prop.test(table(outcomes[, i], datamatch$EV)[2, ], n = apply(table(outcomes[, i], datamatch$EV), 2, sum))$p.value
+}
+tab1 <- tab1[rev(order(tab1[, "diff"])), ]
+tab1
+```
+
+## Drop data
+```{r}
+# Drop observations with missing values in covariates
+datamatch[, 10:18][is.na(datamatch[, 10:18]) == "TRUE"] <- 99999
+datamatch <- na.omit(datamatch)
+```
+
+## Table 2 pre-matching
+```{r}
+EV <- datamatch[2]
+covariates <- datamatch[c("age.group", "educ", "white.collar", "not.full.time", "male", "tech", "pol.info")]
+covariate.lbls <- names(covariates)
+n.covariates <- dim(covariates)[2]
+tab2.pre <- matrix(NA, nrow = n.covariates, ncol = 4)
+rownames(tab2.pre) <- covariate.lbls
+colnames(tab2.pre) <- c("ev", "tv", "diff", "pvalue")
+tab2.pre[, 1:2] <- cbind(apply(covariates[EV == 1,], 2, mean), apply(covariates[EV == 0,], 2, mean))
+tab2.pre[, 3] <- tab2.pre[, 1] - tab2.pre[, 2]
+for (i in c(1, 2, 6, 7)){
+  tab2.pre[i, 4] <- ks.boot(covariates[, i][EV == 1], covariates[, i][EV == 0], nboots = 500)$ks.boot.pvalue
+}
+for (i in c(3, 4, 5)){
+  tab2.pre[i, 4] <- prop.test(table(covariates[, i], EV$EV), n = apply(table(covariates[,i],EV$EV),2, sum))$p.value
+}
+tab2.pre
+```
+
+## Balance of covariates
+
+```{r}
+pl1 = bal.plot(datamatch$EV ~ datamatch$age.group, which = "unadjusted")
+pl2 = bal.plot(datamatch$EV ~ I(datamatch$age.group^2), which = "unadjusted")
+pl3 = bal.plot(datamatch$EV ~ I(datamatch$age.group^3), which = "unadjusted")
+pl4 = bal.plot(datamatch$EV ~ datamatch$educ, which = "unadjusted")
+pl5 = bal.plot(datamatch$EV ~ I(datamatch$educ^2), which = "unadjusted")
+pl6 = bal.plot(datamatch$EV ~ datamatch$tech, which = "unadjusted")
+pl7 = bal.plot(datamatch$EV ~ I(datamatch$tech^2), which = "unadjusted")
+pl8 = bal.plot(datamatch$EV ~ datamatch$pol.info, which = "unadjusted")
+pl9 = bal.plot(datamatch$EV ~ datamatch$white.collar, which = "unadjusted")
+pl10 = bal.plot(datamatch$EV ~ datamatch$not.full.time, which = "unadjusted")
+pl11 = bal.plot(datamatch$EV ~ datamatch$male, which = "unadjusted")
+# Covariates: age.group, I(age.group^2), I(age.group^3), educ, tech, I(educ^2), I(tech^2), pol.info, white.collar, not.full.time, male
+ 
+grid.arrange(pl1, pl2, pl3, pl4, pl5, pl6, pl7, pl8, pl9, pl10,pl11, ncol = 2)
+```
+
+## Table 3 pre-matching
+```{r}
+datamatch[datamatch == 99999] <- NA
+outcomes.pre <- datamatch[10:18]
+tab3.pre <- matrix(NA,nrow = n.outcomes,ncol = 5)
+rownames(tab3.pre) <- outcomes.lbls
+colnames(tab3.pre) <- c("N", "prop.ev", "prop.tv", "diff", "pvalue")
+for (i in 1:n.outcomes) {
+  tab3.pre[i, 1] <- length(na.omit(outcomes.pre[, i]))
+  tab3.pre[i, 2:3] <- rev(prop.table(table(outcomes.pre[,i],datamatch$EV),2)[2,])*100
+  tab3.pre[i, 4] <- tab3.pre[i, 2] - tab3.pre[i, 3]	
+  tab3.pre[i, 5] <- prop.test(table(outcomes.pre[, i], datamatch$EV)[2, ], n = apply(table(outcomes.pre[, i], datamatch$EV), 2, sum))$p.value
+}
+datamatch[, 10:18][is.na(datamatch[, 10:18]) == "TRUE"] <- 99999
+tab3.pre
+```
+
+## Matching (with matchit)
+```{r}
+print("Matching")
+set.seed(36466)
+m.out <- matchit(EV ~ age.group + I(age.group^2) + I(age.group^3) + age.group:educ + age.group:tech + educ + I(educ^2) + tech + I(tech^2) + pol.info + educ:pol.info + age.group:pol.info + tech:pol.info + white.collar + not.full.time + male, caliper = 0.05, data = datamatch, method = "nearest")
+print("Balance Improvement")
+print(summary(m.out))
+```
+
+## Balance after p-score
+```{r}
+pl1 = bal.plot(m.out, var.name = "age.group", which = "both")
+pl2 = bal.plot(m.out, var.name = "I(age.group^2)", which = "both")
+pl3 = bal.plot(m.out, var.name = "I(age.group^3)", which = "both")
+pl4 = bal.plot(m.out, var.name = "educ", which = "both")
+pl6 = bal.plot(m.out, var.name = "tech", which = "both")
+pl5 = bal.plot(m.out, var.name = "I(educ^2)", which = "both")
+pl7 = bal.plot(m.out, var.name = "I(tech^2)", which = "both")
+pl8 = bal.plot(m.out, var.name = "pol.info", which = "both")
+pl9 = bal.plot(m.out, var.name = "white.collar", which = "both")
+pl10 = bal.plot(m.out, var.name = "not.full.time", which = "both")
+pl11 = bal.plot(m.out, var.name = "male", which = "both")
+grid.arrange(pl1, pl2, pl3, pl4, pl5, pl6, pl7, pl8, pl9, pl10, pl11, ncol =2)
+```
+
+## Matched data
+
+```{r}
+datamatched <- match.data(m.out)
+datamatched[datamatched == 99999] <- NA
+save(datamatched, file = "rep_datamatched.Rdata")
+```
+
+## Table 2 after matching
+```{r}
+EV.post <- datamatched[2]
+covariates.post <- datamatched[, covariate.lbls]
+tab2.post <- matrix(NA, nrow = n.covariates, ncol = 4)
+rownames(tab2.post) <- covariate.lbls
+colnames(tab2.post) <- c("ev", "tv", "diff", "pvalue")
+tab2.post[, 1:2] <- cbind(apply(covariates.post[EV.post == 1, ], 2, mean), apply(covariates.post[EV.post == 0,], 2, mean))
+tab2.post[, 3] <- tab2.post[, 1] - tab2.post[, 2]
+for (i in c(1, 2, 6 , 7)){
+  tab2.post[i, 4]<-ks.boot(covariates.post[,i][EV.post==1],covariates.post[,i][EV.post==0], nboots = 500)$ks.boot.pvalue
+}
+for (i in c(3, 4, 5)){
+  tab2.post[i, 4] <- prop.test(table(covariates.post[, i], EV.post$EV), n = apply(table(covariates.post[, i], EV.post$EV),2 , sum))$p.value
+}
+tab2 <- cbind(tab2.pre, tab2.post)
+tab2[3:5, c(1:3, 5:7)] <- tab2[3:5, c(1:3, 5:7)] * 100
+```
+
+## Table 2 Replication
+```{r}
+tab2.df <- data.frame(tab2)
+tab2.df
+```
+---------------------------
+
+## Table 3 after p-score matching
+```{r}
+outcomes.post <- datamatched[10:18]
+tab3.post <- matrix(NA, nrow = n.outcomes, ncol = 5)
+rownames(tab3.post) <- outcomes.lbls
+colnames(tab3.post) <- c("N", "prop.ev", "prop.tv", "diff", "pvalue")
+for (i in 1:n.outcomes) {
+  tab3.post[i, 1] <- length(na.omit(outcomes.post[, i]))
+  tab3.post[i, 2:3] <- rev(prop.table(table(outcomes.post[, i], datamatched$EV), 2)[2, ]) * 100
+  tab3.post[i, 4] <- tab3.post[i, 2] - tab3.post[i, 3]	
+  tab3.post[i, 5] <- prop.test(table(outcomes.post[, i], datamatched$EV)[2, ], n = apply(table(outcomes.post[, i], datamatched$EV), 2, sum))$p.value
+}
+tab3 <- cbind(tab3.pre, tab3.post)
+tab3 <- tab3[rev(order(tab3[, 9])), ]
+```
+
+## Table 3 Replication
+```{r}
+tab3.df <- data.frame(tab3)
+tab3.df
+```
+
+
+# Extension - Genetic Matching
+```{r}
+# Treatment
+Tr <- datamatch$EV
+# Covariates
+X <- cbind(datamatch$age.group, I(datamatch$age.group^2), I(datamatch$age.group^3), datamatch$age.group:datamatch$educ, datamatch$age.group:datamatch$tech, datamatch$educ, I(datamatch$educ^2), datamatch$tech, I(datamatch$tech^2), datamatch$pol.info, datamatch$educ:datamatch$pol.info, datamatch$age.group:datamatch$pol.info, datamatch$tech:datamatch$pol.info, datamatch$white.collar, datamatch$not.full.time, datamatch$male)
+# Genetic Matching
+invisible(capture.output(genout <- GenMatch(Tr = Tr, X = X, pop.size = 1000, nboots = 10, estimand="ATT", unif.seed = 123, int.seed = 92485)))
+# Match
+mout.gen <- Match(Tr=Tr, X = X, Weight.matrix = genout)
+# dataframe
+mout.df <- rbind(datamatch[mout.gen$index.treated,],datamatch[mout.gen$index.control,])
+```
+
+## Balance after genetic matching
+```{r}
+pl1 = bal.plot(datamatch, treated = datamatch$EV, var.name = "age.group", weights = list(Matched = mout.gen),which = "both")
+pl2 = bal.plot(datamatch, treated = datamatch$EV, var.name = "educ", weights = list(Matched = mout.gen),which = "both")
+pl3 = bal.plot(datamatch, treated = datamatch$EV, var.name = "tech", weights = list(Matched = mout.gen),which = "both")
+pl4 = bal.plot(datamatch, treated = datamatch$EV, var.name = "pol.info", weights = list(Matched = mout.gen),which = "both")
+pl5 = bal.plot(datamatch, treated = datamatch$EV, var.name = "white.collar", weights = list(Matched = mout.gen),which = "both")
+pl6 = bal.plot(datamatch, treated = datamatch$EV, var.name = "not.full.time", weights = list(Matched = mout.gen),which = "both")
+pl7 = bal.plot(datamatch, treated = datamatch$EV, var.name = "male", weights = list(Matched = mout.gen),which = "both")
+grid.arrange(pl1, pl2, pl3, pl4, pl5, pl6, pl7, ncol =2)
+```
+
+## Table 2 w GenMatch
+```{r}
+gen_datamatched <- mout.df
+EV.post <- gen_datamatched[2]
+covariates.post.gen <- gen_datamatched[, covariate.lbls]
+tab2.post.gen <- matrix(NA, nrow = n.covariates, ncol = 4)
+rownames(tab2.post.gen) <- covariate.lbls
+colnames(tab2.post.gen) <- c("ev", "tv", "diff", "pvalue")
+tab2.post.gen[, 1:2] <- cbind(apply(covariates.post.gen[EV.post == 1, ], 2, mean), apply(covariates.post.gen[EV.post == 0,], 2, mean))
+tab2.post.gen[, 3] <- tab2.post.gen[, 1] - tab2.post.gen[, 2]
+for (i in c(1, 2, 6 , 7)){
+  tab2.post.gen[i, 4]<-ks.boot(covariates.post.gen[,i][EV.post==1],covariates.post.gen[,i][EV.post==0], nboots = 500)$ks.boot.pvalue
+}
+for (i in c(3, 4, 5)){
+  tab2.post.gen[i, 4] <- prop.test(table(covariates.post.gen[, i], EV.post$EV), n = apply(table(covariates.post.gen[, i], EV.post$EV),2 , sum))$p.value
+}
+tab2 <- cbind(tab2.pre, tab2.post.gen)
+tab2[3:5, c(1:3, 5:7)] <- tab2[3:5, c(1:3, 5:7)] * 100
+tab2.gen.df <- data.frame(tab2)
+tab2.gen.df
+```
+
+
+## Table 3 with GenMatch
+```{r}
+outcomes.post.gen <- gen_datamatched[10:18]
+tab3.post.gen <- matrix(NA, nrow = n.outcomes, ncol = 5)
+rownames(tab3.post.gen) <- outcomes.lbls
+colnames(tab3.post.gen) <- c("N", "prop.ev", "prop.tv", "diff", "pvalue")
+for (i in 1:n.outcomes) {
+  tab3.post.gen[i, 1] <- length(na.omit(outcomes.post.gen[, i]))
+  tab3.post.gen[i, 2:3] <- rev(prop.table(table(outcomes.post.gen[, i], gen_datamatched$EV), 2)[2, ]) * 100
+  tab3.post.gen[i, 4] <- tab3.post.gen[i, 2] - tab3.post.gen[i, 3]	
+  tab3.post.gen[i, 5] <- prop.test(table(outcomes.post.gen[, i], gen_datamatched$EV)[2, ], n = apply(table(outcomes.post.gen[, i], gen_datamatched$EV), 2, sum))$p.value
+}
+tab3.gen <- cbind(tab3.pre, tab3.post.gen)
+tab3.gen <- tab3.gen[rev(order(tab3[, 9])), ]
+tab3.gen.df <- data.frame(tab3.gen)
+tab3.gen.df
+```
